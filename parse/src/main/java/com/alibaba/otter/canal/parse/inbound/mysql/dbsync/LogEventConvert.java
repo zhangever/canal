@@ -207,38 +207,46 @@ public class LogEventConvert extends AbstractCanalLifeCycle implements BinlogPar
         String queryString = event.getQuery();
         if (StringUtils.startsWithIgnoreCase(queryString, XA_START)) {
             // xa start use TransactionBegin
+            final Pair xidPair = createSpecialPair(XA_XID, getXaXid(queryString, XA_START));
             TransactionBegin.Builder beginBuilder = TransactionBegin.newBuilder();
             beginBuilder.setThreadId(event.getSessionId());
             beginBuilder.addProps(createSpecialPair(XA_TYPE, XA_START));
-            beginBuilder.addProps(createSpecialPair(XA_XID, getXaXid(queryString, XA_START)));
+            beginBuilder.addProps(xidPair);
             TransactionBegin transactionBegin = beginBuilder.build();
-            Header header = createHeader(event.getHeader(), "", "", null);
+            Header header = createHeader(event.getHeader(), "", "", null)
+                    .toBuilder().addProps(xidPair).build();
             return createEntry(header, EntryType.TRANSACTIONBEGIN, transactionBegin.toByteString());
         } else if (StringUtils.startsWithIgnoreCase(queryString, XA_END)) {
             // xa start use TransactionEnd
+            final Pair xidPair = createSpecialPair(XA_XID, getXaXid(queryString, XA_END));
             TransactionEnd.Builder endBuilder = TransactionEnd.newBuilder();
             endBuilder.setTransactionId(String.valueOf(0L));
             endBuilder.addProps(createSpecialPair(XA_TYPE, XA_END));
-            endBuilder.addProps(createSpecialPair(XA_XID, getXaXid(queryString, XA_END)));
+            endBuilder.addProps(xidPair);
             TransactionEnd transactionEnd = endBuilder.build();
-            Header header = createHeader(event.getHeader(), "", "", null);
+            Header header = createHeader(event.getHeader(), "", "", null)
+                    .toBuilder().addProps(xidPair).build();
             return createEntry(header, EntryType.TRANSACTIONEND, transactionEnd.toByteString());
         } else if (StringUtils.startsWithIgnoreCase(queryString, XA_COMMIT)) {
             // xa commit
-            Header header = createHeader(event.getHeader(), "", "", EventType.XACOMMIT);
+            final Pair xidPair = createSpecialPair(XA_XID, getXaXid(queryString, XA_COMMIT));
+            Header header = createHeader(event.getHeader(), "", "", EventType.XACOMMIT)
+                    .toBuilder().addProps(xidPair).build();
             RowChange.Builder rowChangeBuider = RowChange.newBuilder();
             rowChangeBuider.setSql(queryString);
             rowChangeBuider.addProps(createSpecialPair(XA_TYPE, XA_COMMIT));
-            rowChangeBuider.addProps(createSpecialPair(XA_XID, getXaXid(queryString, XA_COMMIT)));
+            rowChangeBuider.addProps(xidPair);
             rowChangeBuider.setEventType(EventType.XACOMMIT);
             return createEntry(header, EntryType.ROWDATA, rowChangeBuider.build().toByteString());
         } else if (StringUtils.startsWithIgnoreCase(queryString, XA_ROLLBACK)) {
             // xa rollback
-            Header header = createHeader(event.getHeader(), "", "", EventType.XAROLLBACK);
+            final Pair xidPair = createSpecialPair(XA_XID, getXaXid(queryString, XA_ROLLBACK));
+            Header header = createHeader(event.getHeader(), "", "", EventType.XAROLLBACK)
+                    .toBuilder().addProps(xidPair).build();
             RowChange.Builder rowChangeBuider = RowChange.newBuilder();
             rowChangeBuider.setSql(queryString);
             rowChangeBuider.addProps(createSpecialPair(XA_TYPE, XA_ROLLBACK));
-            rowChangeBuider.addProps(createSpecialPair(XA_XID, getXaXid(queryString, XA_ROLLBACK)));
+            rowChangeBuider.addProps(xidPair);
             rowChangeBuider.setEventType(EventType.XAROLLBACK);
             return createEntry(header, EntryType.ROWDATA, rowChangeBuider.build().toByteString());
         } else if (StringUtils.endsWithIgnoreCase(queryString, BEGIN)) {

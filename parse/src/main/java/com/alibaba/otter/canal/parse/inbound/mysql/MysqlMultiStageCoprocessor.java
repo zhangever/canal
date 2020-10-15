@@ -1,5 +1,6 @@
 package com.alibaba.otter.canal.parse.inbound.mysql;
 
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -243,10 +244,30 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
 
     }
 
+    /**
+     * 获取XA语句的xid
+     * @return
+     */
+    private static String getXid(List<CanalEntry.Pair> props) {
+        String xid = null;
+        for (CanalEntry.Pair pair : props) {
+            if (LogEventConvert.XA_XID.equals(pair.getKey())) {
+                return pair.getValue();
+            }
+        }
+
+        return null;
+    }
+
     private class SimpleParserStage implements EventHandler<MessageEvent>, LifecycleAware {
 
         private LogDecoder decoder;
         private LogContext context;
+        /**
+         * xid for mysql xa statements
+         * It's thread safe as phase 2 is single thread.
+         */
+        private String xid;
 
         public SimpleParserStage(LogContext context){
             decoder = new LogDecoder(LogEvent.UNKNOWN_EVENT, LogEvent.ENUM_END_EVENT);
@@ -290,8 +311,20 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
                         break;
                     default:
                         CanalEntry.Entry entry = logEventConvert.parse(event.getEvent(), false);
-                        event.setEntry(entry);
+                        if (entry != null) {
+                            event.setEntry(entry);
+                            switch (entry.getEntryType()) {
+                                case TRANSACTIONBEGIN:
+                                    xid = getXid(entry.getHeader().getPropsList());
+                                    break;
+                                default:
+                                    xid = null;
+                                    break;
+                            }
+                        }
                 }
+
+                event.setXid(xid);
 
                 // 记录一下DML的表结构
                 event.setNeedDmlParse(needDmlParse);
@@ -328,6 +361,11 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
                         default:
                             // 单独解析dml事件
                             entry = logEventConvert.parseRowsEvent((RowsLogEvent) event.getEvent(), event.getTable());
+                    }
+
+                    String xid = event.getXid();
+                    if (xid != null) {
+                        entry = entry.toBuilder().setHeader(entry.getHeader().toBuilder().addProps(LogEventConvert.createSpecialPair(LogEventConvert.XA_XID, xid)).build()).build();
                     }
 
                     event.setEntry(entry);
@@ -394,6 +432,10 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
         private boolean          needDmlParse = false;
         private TableMeta        table;
         private LogEvent         event;
+        /**
+         * xid of mysql xa statement
+         */
+        private String           xid;
 
         public LogBuffer getBuffer() {
             return buffer;
@@ -435,6 +477,13 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
             this.table = table;
         }
 
+        public String getXid() {
+            return xid;
+        }
+
+        public void setXid(String xid) {
+            this.xid = xid;
+        }
     }
 
     static class SimpleFatalExceptionHandler implements ExceptionHandler {
