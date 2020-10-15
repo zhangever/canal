@@ -33,11 +33,9 @@ import com.taobao.tddl.dbsync.binlog.LogBuffer;
 import com.taobao.tddl.dbsync.binlog.LogContext;
 import com.taobao.tddl.dbsync.binlog.LogDecoder;
 import com.taobao.tddl.dbsync.binlog.LogEvent;
-import com.taobao.tddl.dbsync.binlog.event.DeleteRowsLogEvent;
-import com.taobao.tddl.dbsync.binlog.event.FormatDescriptionLogEvent;
-import com.taobao.tddl.dbsync.binlog.event.RowsLogEvent;
-import com.taobao.tddl.dbsync.binlog.event.UpdateRowsLogEvent;
-import com.taobao.tddl.dbsync.binlog.event.WriteRowsLogEvent;
+import com.taobao.tddl.dbsync.binlog.event.*;
+
+import static com.alibaba.otter.canal.parse.inbound.mysql.dbsync.LogEventConvert.*;
 
 /**
  * 针对解析器提供一个多阶段协同的处理
@@ -251,7 +249,7 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
     private static String getXid(List<CanalEntry.Pair> props) {
         String xid = null;
         for (CanalEntry.Pair pair : props) {
-            if (LogEventConvert.XA_XID.equals(pair.getKey())) {
+            if (XA_XID.equals(pair.getKey())) {
                 return pair.getValue();
             }
         }
@@ -317,10 +315,28 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
                                 case TRANSACTIONBEGIN:
                                     xid = getXid(entry.getHeader().getPropsList());
                                     break;
+                                case TRANSACTIONEND:
+                                    // do nothing
+                                    break;
                                 default:
                                     xid = null;
                                     break;
                             }
+                        } else if (eventType == LogEvent.XA_PREPARE_LOG_EVENT && ((XaPrepareLogEvent)event.getEvent()).isOnePhase()) {
+                            // 处理一阶段提交的情况
+                            assert xid != null;
+                            // 把事件转换为commit事件
+                            // xa commit
+                            final CanalEntry.Pair xidPair = LogEventConvert.createSpecialPair(XA_XID, xid);
+                            CanalEntry.Header header = LogEventConvert.createHeader(event.getEvent().getHeader(), "", "", CanalEntry.EventType.XACOMMIT)
+                                    .toBuilder().addProps(xidPair).build();
+                            CanalEntry.RowChange.Builder rowChangeBuider = CanalEntry.RowChange.newBuilder();
+                            rowChangeBuider.setSql("XA COMMIT " + xid);
+                            rowChangeBuider.addProps(LogEventConvert.createSpecialPair(XA_TYPE, XA_COMMIT));
+                            rowChangeBuider.addProps(xidPair);
+                            rowChangeBuider.setEventType(CanalEntry.EventType.XACOMMIT);
+                            event.setEntry(createEntry(header, CanalEntry.EntryType.ROWDATA, rowChangeBuider.build().toByteString()));
+                            xid = null;
                         }
                 }
 
@@ -365,7 +381,9 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
 
                     String xid = event.getXid();
                     if (xid != null) {
-                        entry = entry.toBuilder().setHeader(entry.getHeader().toBuilder().addProps(LogEventConvert.createSpecialPair(LogEventConvert.XA_XID, xid)).build()).build();
+                        entry = entry.toBuilder().setHeader(entry.getHeader().toBuilder().addProps(LogEventConvert.createSpecialPair(XA_XID, xid)).build()).build();
+                        // reset the xid
+                        event.setXid(null);
                     }
 
                     event.setEntry(entry);
