@@ -648,7 +648,8 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
     }
 
     public void setParallel(boolean parallel) {
-        this.parallel = parallel;
+        //todo hack to always true
+        this.parallel = true;
     }
 
     public int getParallelThreadSize() {

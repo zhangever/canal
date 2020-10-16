@@ -92,7 +92,13 @@ public class EventTransactionBuffer extends AbstractCanalLifeCycle {
                 if (xid != null) {
                     List<CanalEntry.Entry> entries = xaEntries.get(xid);
                     if (entries == null) {
-                        throw new RuntimeException("Xid:" + xid + " not found in local cache at xa end");
+                        // 这里有可能在同步点开始于一个xa事务的中间
+                        // 老版本canal一个xa事务分开两步来处理: xa prepare, xa commit/rollback
+                        // 如果上一次同步点位位于事务中间的话(假设上次同步用的是老版本的canal), 那么就会出现找不到xid的错误。 目前直接忽略。
+                        // 注意这个错误在启用同步后不应该出现多次。
+                        logger.error("Xid:" + xid + " not found in local cache at xa end");
+                        //throw new RuntimeException("Xid:" + xid + " not found in local cache at xa end");
+                        return;
                     } else {
                         entries.add(entry);
                     }
@@ -109,7 +115,11 @@ public class EventTransactionBuffer extends AbstractCanalLifeCycle {
                         if (xid == null || !xaEntries.containsKey(xid)) {
                             String errorMsg = "xid:" + xid + " not found in local cache at xa commit";
                             logger.error(errorMsg);
-                            throw new RuntimeException(errorMsg);
+                            // 见XATRANSACTIONEND
+                            if (xid==null) {
+                                throw new RuntimeException(errorMsg);
+                            }
+                            return;
                         }
                         flushXa(xaEntries.remove(xid));
                         break;

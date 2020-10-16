@@ -322,9 +322,8 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
                                     xid = null;
                                     break;
                             }
-                        } else if (eventType == LogEvent.XA_PREPARE_LOG_EVENT && ((XaPrepareLogEvent)event.getEvent()).isOnePhase()) {
+                        } else if (eventType == LogEvent.XA_PREPARE_LOG_EVENT && ((XaPrepareLogEvent)event.getEvent()).isOnePhase() && xid != null) {
                             // 处理一阶段提交的情况
-                            assert xid != null;
                             // 把事件转换为commit事件
                             // xa commit
                             final CanalEntry.Pair xidPair = LogEventConvert.createSpecialPair(XA_XID, xid);
@@ -380,10 +379,8 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
                     }
 
                     String xid = event.getXid();
-                    if (xid != null) {
+                    if (xid != null && entry != null) {
                         entry = entry.toBuilder().setHeader(entry.getHeader().toBuilder().addProps(LogEventConvert.createSpecialPair(XA_XID, xid)).build()).build();
-                        // reset the xid
-                        event.setXid(null);
                     }
 
                     event.setEntry(entry);
@@ -425,6 +422,7 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
                 event.setEvent(null);
                 event.setTable(null);
                 event.setEntry(null);
+                event.setXid(null);
                 event.setNeedDmlParse(false);
             } catch (Throwable e) {
                 exception = new CanalParseException(e);
