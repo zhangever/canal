@@ -35,6 +35,7 @@ import com.taobao.tddl.dbsync.binlog.LogDecoder;
 import com.taobao.tddl.dbsync.binlog.LogEvent;
 import com.taobao.tddl.dbsync.binlog.event.*;
 
+import static com.alibaba.otter.canal.parse.inbound.AbstractEventParser.getXid;
 import static com.alibaba.otter.canal.parse.inbound.mysql.dbsync.LogEventConvert.*;
 
 /**
@@ -240,21 +241,6 @@ public class MysqlMultiStageCoprocessor extends AbstractCanalLifeCycle implement
             LockSupport.parkNanos(100 * 1000L * newFullTimes);
         }
 
-    }
-
-    /**
-     * 获取XA语句的xid
-     * @return
-     */
-    private static String getXid(List<CanalEntry.Pair> props) {
-        String xid = null;
-        for (CanalEntry.Pair pair : props) {
-            if (XA_XID.equals(pair.getKey())) {
-                return pair.getValue();
-            }
-        }
-
-        return null;
     }
 
     private class SimpleParserStage implements EventHandler<MessageEvent>, LifecycleAware {

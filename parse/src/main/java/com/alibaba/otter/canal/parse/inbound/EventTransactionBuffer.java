@@ -74,7 +74,7 @@ public class EventTransactionBuffer extends AbstractCanalLifeCycle {
     }
 
     public void add(CanalEntry.Entry entry) throws InterruptedException {
-        String xid = getXid(entry.getHeader().getPropsList());
+        String xid = AbstractEventParser.getXid(entry.getHeader().getPropsList());
         switch (entry.getEntryType()) {
             case TRANSACTIONBEGIN:
                 flush();// 刷新上一次的数据
@@ -195,21 +195,6 @@ public class EventTransactionBuffer extends AbstractCanalLifeCycle {
 
     private void flushXa(List<CanalEntry.Entry> transaction) throws InterruptedException {
         flushCallback.flush(transaction);
-    }
-
-    /**
-     * 获取XA语句的xid
-     * @return
-     */
-    private String getXid(List<CanalEntry.Pair> props) {
-        String xid = null;
-        for (CanalEntry.Pair pair : props) {
-            if (LogEventConvert.XA_XID.equals(pair.getKey())) {
-                return pair.getValue();
-            }
-        }
-
-        return null;
     }
 
     /**

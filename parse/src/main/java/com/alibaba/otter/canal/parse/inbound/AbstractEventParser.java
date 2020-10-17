@@ -9,8 +9,10 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-
 import com.alibaba.otter.canal.parse.inbound.mysql.MysqlConnection;
+import com.alibaba.otter.canal.parse.inbound.mysql.dbsync.LogEventConvert;
+import com.taobao.tddl.dbsync.binlog.LogEvent;
+import com.taobao.tddl.dbsync.binlog.event.XaPrepareLogEvent;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.exception.ExceptionUtils;
 import org.apache.commons.lang.math.RandomUtils;
@@ -40,6 +42,10 @@ import com.alibaba.otter.canal.sink.CanalEventSink;
 import com.alibaba.otter.canal.sink.exception.CanalSinkException;
 
 import static com.alibaba.otter.canal.parse.driver.mysql.utils.GtidUtil.parseGtidSet;
+import static com.alibaba.otter.canal.parse.inbound.mysql.dbsync.LogEventConvert.*;
+import static com.alibaba.otter.canal.parse.inbound.mysql.dbsync.LogEventConvert.createEntry;
+import static com.alibaba.otter.canal.protocol.CanalEntry.EventType.XACOMMIT;
+import static com.alibaba.otter.canal.protocol.CanalEntry.EventType.XAROLLBACK;
 
 /**
  * 抽象的EventParser, 最大化共用mysql/oracle版本的实现
@@ -209,12 +215,50 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
 
                             private LogPosition lastPosition;
 
+                            /**
+                             * xid for mysql xa statements
+                             * It's thread safe as phase 2 is single thread.
+                             */
+                            private String xid;
+
                             public boolean sink(EVENT event) {
                                 try {
                                     CanalEntry.Entry entry = parseAndProfilingIfNecessary(event, false);
 
                                     if (!running) {
                                         return false;
+                                    }
+
+                                    if (entry != null) {
+                                        switch (entry.getEntryType()) {
+                                            case TRANSACTIONBEGIN:
+                                                xid = getXid(entry.getHeader().getPropsList());
+                                                break;
+                                            case ROWDATA:
+                                                CanalEntry.EventType eventType = entry.getHeader().getEventType();
+                                                if (eventType == XACOMMIT || eventType == XAROLLBACK) {
+                                                    xid = null;
+                                                } else if (xid != null) {
+                                                    entry = entry.toBuilder().setHeader(entry.getHeader().toBuilder().addProps(LogEventConvert.createSpecialPair(XA_XID, xid)).build()).build();
+                                                }
+                                                break;
+                                            default:
+                                                //do nothing
+                                        }
+                                    } else if (((LogEvent)event).getHeader().getType() == LogEvent.XA_PREPARE_LOG_EVENT && ((XaPrepareLogEvent) event).isOnePhase() && xid != null) {
+                                        // 处理一阶段提交的情况
+                                        // 把事件转换为commit事件
+                                        // xa commit
+                                        final CanalEntry.Pair xidPair = LogEventConvert.createSpecialPair(XA_XID, xid);
+                                        CanalEntry.Header header = LogEventConvert.createHeader(((LogEvent)event).getHeader(), "", "", XACOMMIT)
+                                                .toBuilder().addProps(xidPair).build();
+                                        CanalEntry.RowChange.Builder rowChangeBuider = CanalEntry.RowChange.newBuilder();
+                                        rowChangeBuider.setSql("XA COMMIT " + xid);
+                                        rowChangeBuider.addProps(LogEventConvert.createSpecialPair(XA_TYPE, XA_COMMIT));
+                                        rowChangeBuider.addProps(xidPair);
+                                        rowChangeBuider.setEventType(XACOMMIT);
+                                        entry = createEntry(header, CanalEntry.EntryType.ROWDATA, rowChangeBuider.build().toByteString());
+                                        xid = null;
                                     }
 
                                     if (entry != null) {
@@ -648,8 +692,7 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
     }
 
     public void setParallel(boolean parallel) {
-        //todo hack to always true
-        this.parallel = true;
+        this.parallel = parallel;
     }
 
     public int getParallelThreadSize() {
@@ -723,4 +766,19 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
 	public Map<String, List<String>> getFieldBlackFilterMap() {
 		return fieldBlackFilterMap;
 	}
+
+    /**
+     * 获取XA语句的xid
+     * @return
+     */
+    public static String getXid(List<CanalEntry.Pair> props) {
+        String xid = null;
+        for (CanalEntry.Pair pair : props) {
+            if (LogEventConvert.XA_XID.equals(pair.getKey())) {
+                return pair.getValue();
+            }
+        }
+
+        return null;
+    }
 }
