@@ -2,8 +2,13 @@ package com.alibaba.otter.canal.parse.inbound;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.google.common.collect.Lists;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
 
 import com.alibaba.otter.canal.common.AbstractCanalLifeCycle;
@@ -19,10 +24,15 @@ import com.alibaba.otter.canal.store.CanalStoreException;
  */
 public class EventTransactionBuffer extends AbstractCanalLifeCycle {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(EventTransactionBuffer.class);
     private static final long        INIT_SQEUENCE = -1;
     private int                      bufferSize    = 1024;
     private int                      indexMask;
     private CanalEntry.Entry[]       entries;
+    /**
+     * 用于缓存mysql xa statements
+     */
+    private Map<String, List<CanalEntry.Entry>> xaEntries = new ConcurrentHashMap<>(512);
 
     private AtomicLong               putSequence   = new AtomicLong(INIT_SQEUENCE); // 代表当前put操作最后一次写操作发生的位置
     private AtomicLong               flushSequence = new AtomicLong(INIT_SQEUENCE); // 代表满足flush条件后最后一次数据flush的时间
@@ -63,22 +73,82 @@ public class EventTransactionBuffer extends AbstractCanalLifeCycle {
     }
 
     public void add(CanalEntry.Entry entry) throws InterruptedException {
+        String xid = AbstractEventParser.getXid(entry.getHeader().getPropsList());
         switch (entry.getEntryType()) {
             case TRANSACTIONBEGIN:
                 flush();// 刷新上一次的数据
-                put(entry);
+
+                if (xid != null) {
+                    if (xaEntries.containsKey(xid)) {
+                        throw new RuntimeException("Duplicated xid:" + xid + " at xa start statement:\n" + entry.getHeader());
+                    }
+                    xaEntries.put(xid, Lists.newArrayList(entry));
+                } else {
+                    put(entry);
+                }
                 break;
             case TRANSACTIONEND:
-                put(entry);
-                flush();
-                break;
-            case ROWDATA:
-                put(entry);
-                // 针对非DML的数据，直接输出，不进行buffer控制
-                EventType eventType = entry.getHeader().getEventType();
-                if (eventType != null && !isDml(eventType)) {
+                if (xid != null) {
+                    List<CanalEntry.Entry> entries = xaEntries.get(xid);
+                    if (entries == null) {
+                        LOGGER.error("xid:" + xid + " not found in local cache at xa end statement:\n" + entry.getHeader());
+                        return;
+                    } else {
+                        entries.add(entry);
+                    }
+                } else {
+                    put(entry);
                     flush();
                 }
+                break;
+            case ROWDATA:
+                EventType eventType = entry.getHeader().getEventType();
+
+                if (eventType != null) {
+                    switch (eventType) {
+                        case XACOMMIT:
+                            if (xid == null || !xaEntries.containsKey(xid)) {
+                                final String errorMsg = "xid:" + xid + " not found in local cache at xa commit statement:\n" + entry.getHeader();
+                                LOGGER.error(errorMsg);
+                                /**
+                                 * 容错
+                                 * 一个xa事务分两步走，会在binlog中触发更新两次
+                                 * 如果上一次同步结束点位(异常情况下或者canal重启)位于xa事务中间，那么就会出现找不到xid的错误。 目前直接忽略。
+                                 * 注意这个错误在canal启动后不应该出现多次。
+                                 */
+                                if (xid != null) { //should be impossible
+                                    throw new RuntimeException(errorMsg);
+                                }
+                                return;
+                            }
+                            flushXa(xaEntries.remove(xid));
+                            break;
+                        case XAROLLBACK:
+                            if (xid == null || !xaEntries.containsKey(xid)) {
+                                LOGGER.error("xid:" + xid + "not found:\n" + entry.getHeader());
+                                return;
+                            }
+                            xaEntries.remove(xid);
+                            LOGGER.info("just drop xid:" + xid + " for xa rollback");
+                            break;
+                        default:
+                            if (xid != null) {
+                                if (!xaEntries.containsKey(xid)) {
+                                    throw new RuntimeException("xid:" + xid + " not found in local cache within xa\n" + entry.getHeader());
+                                } else {
+                                    xaEntries.get(xid).add(entry);
+                                }
+                            } else {
+                                put(entry);
+                                // 针对非DML的数据，直接输出，不进行buffer控制
+                                if (!isDml(eventType)) {
+                                    flush();
+                                }
+                            }
+                            break;
+                    }
+                }
+
                 break;
             case HEARTBEAT:
                 // master过来的heartbeat，说明binlog已经读完了，是idle状态
@@ -123,6 +193,10 @@ public class EventTransactionBuffer extends AbstractCanalLifeCycle {
             flushCallback.flush(transaction);
             flushSequence.set(end);// flush成功后，更新flush位置
         }
+    }
+
+    private void flushXa(List<CanalEntry.Entry> transactionEntries) throws InterruptedException {
+        flushCallback.flush(transactionEntries);
     }
 
     /**

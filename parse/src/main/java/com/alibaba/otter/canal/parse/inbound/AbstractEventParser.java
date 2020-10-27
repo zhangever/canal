@@ -10,6 +10,9 @@ import java.util.TimerTask;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.alibaba.otter.canal.parse.inbound.mysql.dbsync.LogEventConvert;
+import com.taobao.tddl.dbsync.binlog.LogEvent;
+import com.taobao.tddl.dbsync.binlog.event.XaPrepareLogEvent;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.exception.ExceptionUtils;
 import org.apache.commons.lang.math.RandomUtils;
@@ -212,12 +215,50 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
 
                             private LogPosition lastPosition;
 
+                            /**
+                             * xid for mysql xa statements.
+                             */
+                            private String xid;
+
                             public boolean sink(EVENT event) {
                                 try {
                                     CanalEntry.Entry entry = parseAndProfilingIfNecessary(event, false);
 
                                     if (!running) {
                                         return false;
+                                    }
+
+                                    if (entry != null) {
+                                        switch (entry.getEntryType()) {
+                                            case TRANSACTIONBEGIN:
+                                                xid = getXid(entry.getHeader().getPropsList());
+                                                break;
+                                            case ROWDATA:
+                                                CanalEntry.EventType eventType = entry.getHeader().getEventType();
+                                                if (eventType == CanalEntry.EventType.XACOMMIT || eventType == CanalEntry.EventType.XAROLLBACK) {
+                                                    xid = null;
+                                                } else if (xid != null) {
+                                                    entry = entry.toBuilder().setHeader(entry.getHeader().toBuilder()
+                                                            .addProps(LogEventConvert.createSpecialPair(LogEventConvert.XA_XID, xid)).build()).build();
+                                                }
+                                                break;
+                                            default:
+                                                //do nothing
+                                        }
+                                    } else if (((LogEvent)event).getHeader().getType() == LogEvent.XA_PREPARE_LOG_EVENT
+                                            && ((XaPrepareLogEvent)event).isOnePhase() && xid != null) {
+                                        //处理一阶段提交的情况，这时候parser会返回null的entry，这里需要把事件转换为commit事件
+                                        final CanalEntry.Pair xidPair = LogEventConvert.createSpecialPair(LogEventConvert.XA_XID, xid);
+                                        CanalEntry.Header header = LogEventConvert.createHeader(
+                                                ((LogEvent) event).getHeader(), "", "", CanalEntry.EventType.XACOMMIT)
+                                                .toBuilder().addProps(xidPair).build();
+                                        CanalEntry.RowChange.Builder rowChangeBuilder = CanalEntry.RowChange.newBuilder()
+                                                .setSql("XA COMMIT " + xid)
+                                                .addProps(LogEventConvert.createSpecialPair(LogEventConvert.XA_TYPE, LogEventConvert.XA_COMMIT))
+                                                .addProps(xidPair)
+                                                .setEventType(CanalEntry.EventType.XACOMMIT);
+                                        entry = LogEventConvert.createEntry(header, EntryType.ROWDATA, rowChangeBuilder.build().toByteString());
+                                        xid = null;
                                     }
 
                                     if (entry != null) {
@@ -725,6 +766,15 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
 	public Map<String, List<String>> getFieldBlackFilterMap() {
 		return fieldBlackFilterMap;
 	}
-	
+
+	public static String getXid(List<CanalEntry.Pair> props) {
+	    for (CanalEntry.Pair pair : props) {
+	        if (LogEventConvert.XA_XID.equals(pair.getKey())) {
+	            return pair.getValue();
+            }
+        }
+
+	    return null;
+    }
 	
 }
