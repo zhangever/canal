@@ -26,7 +26,7 @@ public class XABinlogDumpTest {
     public void testSimple() {
         final MysqlEventParser controller = new MysqlEventParser();
         final EntryPosition startPosition = new EntryPosition("mysql-bin.000003", 38363L);
-        controller.setParallel(true);
+        controller.setParallel(false);
         controller.setMasterInfo(new AuthenticationInfo(new InetSocketAddress("127.0.0.1", 3306), "root", "root"));
         controller.setConnectionCharset(Charset.forName("UTF-8"));
         controller.setMasterPosition(startPosition);
@@ -115,7 +115,7 @@ public class XABinlogDumpTest {
         controller.start();
 
         try {
-            Thread.sleep(100 * 1000L);
+            Thread.sleep(10000 * 1000L);
         } catch (InterruptedException e) {
             Assert.fail(e.getMessage());
         }
