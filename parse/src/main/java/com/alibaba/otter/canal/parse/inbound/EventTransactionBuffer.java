@@ -63,6 +63,13 @@ public class EventTransactionBuffer extends AbstractCanalLifeCycle {
         flushSequence.set(INIT_SQEUENCE);
 
         entries = null;
+        if (!xaEntries.isEmpty()) {
+            StringBuilder sb = new StringBuilder("XA may not be handled before stop:");
+            for (Map.Entry<String, List<CanalEntry.Entry>> entries : xaEntries.entrySet()) {
+                sb.append(entries.getKey()).append(",");
+            }
+            LOGGER.warn(sb.toString());
+        }
         super.stop();
     }
 
