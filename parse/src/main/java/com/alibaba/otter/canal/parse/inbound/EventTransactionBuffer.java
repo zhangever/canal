@@ -87,7 +87,8 @@ public class EventTransactionBuffer extends AbstractCanalLifeCycle {
 
                 if (xid != null) {
                     if (xaEntries.containsKey(xid)) {
-                        throw new RuntimeException("Duplicated xid:" + xid + " at xa start statement:\n" + entry.getHeader());
+                        // just ignore
+                        LOGGER.error("Duplicated xid:" + xid + " at xa start statement:\n" + entry.getHeader());
                     }
                     xaEntries.put(xid, Lists.newArrayList(entry));
                 } else {
